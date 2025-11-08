@@ -6,11 +6,12 @@ import joblib
 from pathlib import Path
 import plotly.express as px
 
-DATA_DIR = Path("/mnt/data")
+DATA_DIR = Path(__file__).parent  # 当前 app.py 所在文件夹
+
 @st.cache_data
 def load_data():
-    df = pd.read_csv(DATA_DIR/"df_daily_processed.csv", index_col=0, parse_dates=True)
-    model = joblib.load(DATA_DIR/"rf_energy_model.joblib")
+    df = pd.read_csv(DATA_DIR / "df_daily_processed.csv", index_col=0, parse_dates=True)
+    model = joblib.load(DATA_DIR / "rf_energy_model.joblib")
     return df, model
 
 df, model = load_data()
