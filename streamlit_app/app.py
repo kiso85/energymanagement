@@ -3,6 +3,7 @@ import pandas as pd
 import joblib
 from pathlib import Path
 from sklearn.ensemble import RandomForestRegressor
+import plotly.express as px
 
 DATA_DIR = Path(__file__).parent
 
@@ -29,6 +30,17 @@ df, model = load_data()
 st.set_page_config(page_title="EPSEVG 能耗仪表板", layout="wide")
 st.title("EPSEVG 能耗仪表板（2020-2024）")
 st.markdown("展示历史日能耗，并使用 RandomForest 预测未来 7/15/30/90 天的能耗（逐步预测）")
+
+energy_col = [c for c in df_view.columns if "energy" in c.lower()][0]
+
+fig = px.line(
+    df_view,
+    x=df_view.index,
+    y=energy_col,
+    labels={'x': '日期', energy_col: '能耗 (kWh)'},
+    title='EPSEVG 能耗趋势（历史与预测）'
+)
+st.plotly_chart(fig, use_container_width=True)
 
 # Sidebar controls
 st.sidebar.header("设置")
