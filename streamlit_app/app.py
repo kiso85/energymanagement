@@ -1,18 +1,27 @@
-
 import streamlit as st
 import pandas as pd
-import numpy as np
 import joblib
 from pathlib import Path
-import plotly.express as px
+from sklearn.ensemble import RandomForestRegressor
 
-DATA_DIR = Path(__file__).parent  # 当前 app.py 所在文件夹
+DATA_DIR = Path(__file__).parent
 
 @st.cache_data
 def load_data():
     df = pd.read_csv(DATA_DIR / "df_daily_processed.csv", index_col=0, parse_dates=True)
-    model = joblib.load(DATA_DIR / "rf_energy_model.joblib")
+    try:
+        model = joblib.load(DATA_DIR / "rf_energy_model.joblib")
+    except Exception as e:
+        st.warning(f"⚠️ 模型加载失败 ({e})，正在重新训练模型...")
+        # 自动重新训练模型
+        features = [c for c in df.columns if c not in ["energy_kWh"]]
+        X = df[features]
+        y = df["energy_kWh"]
+        model = RandomForestRegressor(n_estimators=200, random_state=42)
+        model.fit(X, y)
+        joblib.dump(model, DATA_DIR / "rf_energy_model.joblib")
     return df, model
+
 
 df, model = load_data()
 
