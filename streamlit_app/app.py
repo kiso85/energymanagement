@@ -4,6 +4,7 @@ import joblib
 from pathlib import Path
 from sklearn.ensemble import RandomForestRegressor
 import plotly.express as px
+import numpy as np
 
 DATA_DIR = Path(__file__).parent
 
@@ -31,6 +32,16 @@ st.set_page_config(page_title="EPSEVG 能耗仪表板", layout="wide")
 st.title("EPSEVG 能耗仪表板（2020-2024）")
 st.markdown("展示历史日能耗，并使用 RandomForest 预测未来 7/15/30/90 天的能耗（逐步预测）")
 
+
+
+# Sidebar controls
+st.sidebar.header("设置")
+start_date = st.sidebar.date_input("显示开始日期", value=df.index.min().date())
+end_date = st.sidebar.date_input("显示结束日期", value=df.index.max().date())
+
+# Filter data
+df_view = df.loc[str(start_date):str(end_date)].copy()
+
 energy_col = [c for c in df_view.columns if "energy" in c.lower()][0]
 
 fig = px.line(
@@ -41,14 +52,6 @@ fig = px.line(
     title='EPSEVG 能耗趋势（历史与预测）'
 )
 st.plotly_chart(fig, use_container_width=True)
-
-# Sidebar controls
-st.sidebar.header("设置")
-start_date = st.sidebar.date_input("显示开始日期", value=df.index.min().date())
-end_date = st.sidebar.date_input("显示结束日期", value=df.index.max().date())
-
-# Filter data
-df_view = df.loc[str(start_date):str(end_date)].copy()
 
 st.subheader("历史日能耗总览")
 fig = px.line(df_view, x=df_view.index, y='energy_kwh', labels={'x':'日期','energy_kwh':'能耗 (kWh)'})
