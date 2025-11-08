@@ -16,7 +16,8 @@ def load_data():
         # 自动重新训练模型
         features = [c for c in df.columns if c not in ["energy_kWh"]]
         X = df[features]
-        y = df["energy_kWh"]
+        target_col = [c for c in df.columns if "energy" in c.lower()][0]
+        y = df[target_col]
         model = RandomForestRegressor(n_estimators=200, random_state=42)
         model.fit(X, y)
         joblib.dump(model, DATA_DIR / "rf_energy_model.joblib")
