@@ -39,6 +39,7 @@ def load_data_and_model():
         model.fit(X, y)
         joblib.dump(model, model_path)
         joblib.dump(features, features_path)
+        st.success("✅ 模型已重新训练并保存成功。")
 
     return df, model, features
 
