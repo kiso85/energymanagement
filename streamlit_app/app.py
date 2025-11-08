@@ -23,25 +23,69 @@ st.markdown("展示历史日能耗，并使用 RandomForest 预测未来 7/15/30
 def load_data_and_model():
     df = pd.read_csv(DATA_DIR / "df_daily_processed.csv", index_col=0, parse_dates=True)
 
+    # --- 滞后与滚动特征 ---
+    for lag in [1,2,3,7,14,30]:
+        df[f'lag_energy_{lag}'] = df['energy_kwh'].shift(lag)
+    for lag in [1,7,14]:
+        df[f'lag_temp_{lag}'] = df['temp_C'].shift(lag)
+        df[f'lag_rh_{lag}'] = df['rh_pct'].shift(lag)
+    df['roll7_energy'] = df['energy_kwh'].rolling(7).mean()
+    df['roll30_energy'] = df['energy_kwh'].rolling(30).mean()
+
+    # --- 日期特征 ---
+    df['dayofweek'] = df.index.dayofweek
+    df['month'] = df.index.month
+    df['dayofyear'] = df.index.dayofyear
+
+    # --- 节假日/假期特征 ---
+    SPAIN_HOLIDAYS = [
+        "2025-01-01","2025-01-06","2025-03-20","2025-03-21",
+        "2025-05-01","2025-08-15","2025-10-12",
+        "2025-11-01","2025-12-06","2025-12-08","2025-12-25",
+    ]
+    SCHOOL_HOLIDAYS = [
+        ("2025-12-20","2026-01-06"),
+        ("2025-03-24","2025-03-30"),
+        ("2025-07-01","2025-08-31"),
+    ]
+
+    df['is_weekend'] = df.index.dayofweek >= 5
+    spain_holidays = pd.to_datetime(SPAIN_HOLIDAYS)
+    df['is_holiday'] = df.index.isin(spain_holidays)
+
+    def in_school_holiday(date):
+        for start, end in SCHOOL_HOLIDAYS:
+            if pd.Timestamp(start) <= date <= pd.Timestamp(end):
+                return True
+        return False
+    df['is_school_holiday'] = df.index.map(in_school_holiday)
+    df['is_term_time'] = ~(df['is_school_holiday'] | df['is_holiday'] | df['is_weekend'])
+
+    # --- 清理并准备训练数据 ---
+    df_model = df.dropna().copy()
+    target_col = 'energy_kwh'
+    features = [c for c in df_model.columns if c != target_col]
+
     model_path = DATA_DIR / "rf_energy_model.joblib"
     features_path = DATA_DIR / "rf_features.joblib"
 
     try:
         model = joblib.load(model_path)
-        features = joblib.load(features_path)
+        saved_features = joblib.load(features_path)
+        if set(saved_features) != set(features):
+            raise RuntimeError("特征变化，重训中...")
     except Exception as e:
         st.warning(f"⚠️ 模型加载失败 ({e})，正在重新训练模型...")
-        target_col = [c for c in df.columns if "energy" in c.lower()][0]
-        features = [c for c in df.columns if c != target_col]
-        X = df[features]
-        y = df[target_col]
-        model = RandomForestRegressor(n_estimators=200, random_state=42)
+        X = df_model[features]
+        y = df_model[target_col]
+        model = RandomForestRegressor(n_estimators=300, random_state=42)
         model.fit(X, y)
         joblib.dump(model, model_path)
         joblib.dump(features, features_path)
-        st.success("✅ 模型已重新训练并保存成功。")
+        st.success("✅ 模型重新训练完成。")
 
     return df, model, features
+
 
 
 df, model, features = load_data_and_model()
