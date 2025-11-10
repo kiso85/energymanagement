@@ -7,21 +7,21 @@ from pathlib import Path
 import datetime
 
 # -----------------------------------
-# 页面配置
+# Page configuration
 # -----------------------------------
-st.set_page_config(page_title="EPSEVG 能耗预测（Prophet）", layout="wide")
-st.title("🏫 EPSEVG 能耗分析与预测 Dashboard（Prophet）")
+st.set_page_config(page_title="EPSEVG Energy Forecast (Prophet)", layout="wide")
+st.title("🏫 EPSEVG Energy Consumption Forecast Dashboard (Prophet)")
 
 DATA_DIR = Path(__file__).parent
 
 # -----------------------------------
-# 1️⃣ 加载数据
+# 1️⃣ Load data
 # -----------------------------------
 @st.cache_data
 def load_data():
     df = pd.read_csv(DATA_DIR / "df_daily_processed.csv", parse_dates=True)
 
-    # 自动识别日期列和能耗列
+    # Detect date and energy columns automatically
     date_col = None
     for c in df.columns:
         if "date" in c.lower():
@@ -30,11 +30,10 @@ def load_data():
 
     target_col = [c for c in df.columns if "energy" in c.lower()][0]
 
-    # 如果没有明确日期列，就尝试用索引
+    # Parse datetime column
     if date_col is not None:
         df["ds"] = pd.to_datetime(df[date_col])
     else:
-        # 如果没有显式日期列，把第一列或索引当作日期
         df["ds"] = pd.to_datetime(df.iloc[:, 0], errors="coerce")
 
     df["y"] = df[target_col].astype(float)
@@ -42,18 +41,17 @@ def load_data():
 
     return df
 
-
 df = load_data()
 
 # -----------------------------------
-# 2️⃣ 定义节假日（西班牙通用 + 校园假期）
+# 2️⃣ Define holidays (Spain national + school holidays)
 # -----------------------------------
 def make_holiday_df(start_year=2020, end_year=2025):
     holidays = []
     for year in range(start_year, end_year + 1):
         for d in ["01-01", "01-06", "05-01", "08-15", "10-12", "11-01", "12-06", "12-08", "12-25"]:
             holidays.append({"holiday": "national_holiday", "ds": f"{year}-{d}"})
-        # 学校假期：7、8月为暑假
+        # School summer holidays (July–August)
         for m in [7, 8]:
             for day in range(1, 32):
                 try:
@@ -65,7 +63,7 @@ def make_holiday_df(start_year=2020, end_year=2025):
 holiday_df = make_holiday_df(df["ds"].dt.year.min(), df["ds"].dt.year.max() + 1)
 
 # -----------------------------------
-# 3️⃣ 模型训练
+# 3️⃣ Train Prophet model
 # -----------------------------------
 @st.cache_resource
 def train_prophet(df, holidays):
@@ -83,46 +81,47 @@ def train_prophet(df, holidays):
 model = train_prophet(df, holiday_df)
 
 # -----------------------------------
-# 4️⃣ 用户输入预测范围
+# 4️⃣ User input: forecast horizon
 # -----------------------------------
 col1, col2 = st.columns([1, 2])
 with col1:
-    horizon = st.selectbox("选择预测天数", [7, 15, 30, 90], index=2)
+    horizon = st.selectbox("Select forecast horizon (days)", [7, 15, 30, 90], index=2)
 with col2:
-    st.markdown("模型: **Prophet** · 自动捕捉周末/年度季节性与假期影响")
+    st.markdown("**Model:** Prophet · Automatically captures weekly and yearly seasonality + holidays")
 
 # -----------------------------------
-# 5️⃣ 生成预测
+# 5️⃣ Forecast
 # -----------------------------------
 future = model.make_future_dataframe(periods=horizon)
 forecast = model.predict(future)
 
 # -----------------------------------
-# 6️⃣ 可视化
+# 6️⃣ Visualization
 # -----------------------------------
 fig = px.line(
     forecast,
     x="ds",
     y="yhat",
-    labels={"ds": "日期", "yhat": "能耗 (kWh)"},
-    title=f"EPSEVG 能耗历史与未来 {horizon} 天预测（Prophet 模型）"
+    labels={"ds": "Date", "yhat": "Predicted Energy (kWh)"},
+    title=f"EPSEVG Energy Consumption Forecast for Next {horizon} Days (Prophet)"
 )
 fig.add_scatter(
     x=df["ds"],
     y=df["y"],
     mode="lines",
-    name="历史能耗",
+    name="Historical Energy",
     line=dict(width=2, color="blue")
 )
 fig.update_traces(line=dict(width=2))
 st.plotly_chart(fig, use_container_width=True)
 
 # -----------------------------------
-# 7️⃣ 页面说明
+# 7️⃣ Notes
 # -----------------------------------
 st.caption("""
-📊 本模型使用 **Facebook Prophet** 自动学习能耗的季节性规律：  
-- 周一至周五能耗较高；  
-- 周末及节假日较低；  
-- 年度周期（如夏季低谷、冬季高峰）自动捕捉。  
+📊 This dashboard uses **Facebook Prophet** to model EPSEVG daily energy consumption.
+
+- Higher values during weekdays.
+- Lower energy consumption during weekends and public/school holidays.
+- Prophet automatically captures weekly, yearly, and holiday seasonality patterns.
 """)
