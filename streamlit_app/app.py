@@ -1,132 +1,112 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import joblib
 import plotly.express as px
+from prophet import Prophet
 from pathlib import Path
-from sklearn.ensemble import RandomForestRegressor
 import datetime
 
-st.set_page_config(page_title="EPSEVG 能耗仪表盘", layout="wide")
+# -----------------------------------
+# 页面配置
+# -----------------------------------
+st.set_page_config(page_title="EPSEVG 能耗预测（Prophet）", layout="wide")
+st.title("🏫 EPSEVG 能耗分析与预测 Dashboard（Prophet）")
 
 DATA_DIR = Path(__file__).parent
 
-# =============================
-# 节假日与假期规则
-# =============================
-def spain_holidays(year):
-    fixed = ["01-01", "01-06", "05-01", "08-15", "10-12", "11-01", "12-06", "12-08", "12-25"]
-    return [datetime.date.fromisoformat(f"{year}-{d}") for d in fixed]
-
-def in_school_holiday(date):
-    if date.month in [7, 8]:  # 暑假
-        return True
-    if (date.month == 12 and date.day >= 20) or (date.month == 1 and date.day <= 7):  # 圣诞假期
-        return True
-    return False
-
-# =============================
-# 数据与模型加载
-# =============================
+# -----------------------------------
+# 1️⃣ 加载数据
+# -----------------------------------
 @st.cache_data
-def load_data_and_model():
+def load_data():
     df = pd.read_csv(DATA_DIR / "df_daily_processed.csv", index_col=0, parse_dates=True)
-
     # 自动识别能耗列
     target_col = [c for c in df.columns if "energy" in c.lower()][0]
-    y = df[target_col]
-    features = [c for c in df.columns if c != target_col]
-    X = df[features]
+    df = df[[target_col]].rename(columns={target_col: "y"})
+    df = df.reset_index().rename(columns={"index": "ds"})
+    df = df.sort_values("ds")
+    return df
 
-    # 尝试加载模型或重新训练
-    model_path = DATA_DIR / "rf_energy_model.joblib"
-    try:
-        model = joblib.load(model_path)
-    except Exception:
-        st.warning("⚙️ 模型文件不兼容，正在重新训练...")
-        model = RandomForestRegressor(n_estimators=200, random_state=42)
-        model.fit(X, y)
-        joblib.dump(model, model_path)
-    return df, model, features, target_col
+df = load_data()
 
-# =============================
-# 修正版预测函数
-# =============================
-def iterative_forecast(model, df, features, target_col, horizon):
-    current_df = df.copy()
-    preds = []
+# -----------------------------------
+# 2️⃣ 定义节假日（西班牙通用 + 校园假期）
+# -----------------------------------
+def make_holiday_df(start_year=2020, end_year=2025):
+    holidays = []
+    for year in range(start_year, end_year + 1):
+        for d in ["01-01", "01-06", "05-01", "08-15", "10-12", "11-01", "12-06", "12-08", "12-25"]:
+            holidays.append({"holiday": "national_holiday", "ds": f"{year}-{d}"})
+        # 学校假期：7、8月为暑假
+        for m in [7, 8]:
+            for day in range(1, 32):
+                try:
+                    holidays.append({"holiday": "school_summer", "ds": f"{year}-{m:02d}-{day:02d}"})
+                except:
+                    pass
+    return pd.DataFrame(holidays)
 
-    for i in range(1, horizon + 1):
-        next_date = current_df.index.max() + pd.Timedelta(days=1)
-        row = {}
+holiday_df = make_holiday_df(df["ds"].dt.year.min(), df["ds"].dt.year.max() + 1)
 
-        # 滞后特征：从能耗列提取
-        for lag in [1, 2, 3, 7, 14, 30, 60]:
-            val = current_df[target_col].iloc[-lag] if len(current_df) >= lag else current_df[target_col].iloc[-1]
-            row[f"lag_{lag}"] = val
+# -----------------------------------
+# 3️⃣ 模型训练
+# -----------------------------------
+@st.cache_resource
+def train_prophet(df, holidays):
+    m = Prophet(
+        daily_seasonality=False,
+        weekly_seasonality=True,
+        yearly_seasonality=True,
+        holidays=holidays,
+        seasonality_mode="multiplicative"
+    )
+    m.add_seasonality(name="monthly", period=30.5, fourier_order=5)
+    m.fit(df)
+    return m
 
-        # 日历与假期特征
-        row["dayofweek"] = next_date.dayofweek
-        row["month"] = next_date.month
-        row["dayofyear"] = next_date.dayofyear
-        row["is_weekend"] = int(next_date.dayofweek >= 5)
-        row["is_holiday"] = int(next_date.date() in spain_holidays(next_date.year))
-        row["is_school_holiday"] = int(in_school_holiday(next_date))
-        row["is_term_time"] = int(not (row["is_weekend"] or row["is_holiday"] or row["is_school_holiday"]))
+model = train_prophet(df, holiday_df)
 
-        # 滚动均值
-        row["roll7_mean"] = current_df[target_col].tail(7).mean()
-        row["roll30_mean"] = current_df[target_col].tail(30).mean()
-
-        # 确保所有特征列都存在
-        for f in features:
-            if f not in row:
-                if f in current_df.columns:
-                    row[f] = current_df[f].iloc[-1]
-                else:
-                    row[f] = 0
-
-        X_pred = pd.DataFrame([row])[features]
-        pred = model.predict(X_pred)[0]
-        preds.append((next_date, pred))
-
-        # 追加预测行
-        new_row = pd.Series({target_col: pred}, name=next_date)
-        current_df = pd.concat([current_df, new_row.to_frame().T])
-
-    return pd.DataFrame(preds, columns=["date", "prediction"]).set_index("date")
-
-# =============================
-# Streamlit 页面
-# =============================
-st.title("🏫 EPSEVG 能耗分析与预测 Dashboard")
-
-df, model, features, target_col = load_data_and_model()
-
+# -----------------------------------
+# 4️⃣ 用户输入预测范围
+# -----------------------------------
 col1, col2 = st.columns([1, 2])
 with col1:
     horizon = st.selectbox("选择预测天数", [7, 15, 30, 90], index=2)
 with col2:
-    st.markdown("模型: RandomForest · 特征: 滞后 + 日期 + 假期")
+    st.markdown("模型: **Prophet** · 自动捕捉周末/年度季节性与假期影响")
 
-pred_df = iterative_forecast(model, df, features, target_col, horizon)
+# -----------------------------------
+# 5️⃣ 生成预测
+# -----------------------------------
+future = model.make_future_dataframe(periods=horizon)
+forecast = model.predict(future)
 
-# 合并历史 + 预测
-df_plot = pd.concat([
-    df[[target_col]].assign(type="历史"),
-    pred_df.rename(columns={"prediction": target_col}).assign(type="预测")
-])
-
-# 绘制折线图（不显示表格）
+# -----------------------------------
+# 6️⃣ 可视化
+# -----------------------------------
 fig = px.line(
-    df_plot,
-    x=df_plot.index,
-    y=target_col,
-    color="type",
-    labels={"x": "日期", target_col: "能耗 (kWh)", "type": "数据类型"},
-    title=f"EPSEVG 能耗历史与未来 {horizon} 天预测"
+    forecast,
+    x="ds",
+    y="yhat",
+    labels={"ds": "日期", "yhat": "能耗 (kWh)"},
+    title=f"EPSEVG 能耗历史与未来 {horizon} 天预测（Prophet 模型）"
+)
+fig.add_scatter(
+    x=df["ds"],
+    y=df["y"],
+    mode="lines",
+    name="历史能耗",
+    line=dict(width=2, color="blue")
 )
 fig.update_traces(line=dict(width=2))
 st.plotly_chart(fig, use_container_width=True)
 
-st.caption("📊 模型基于滞后值与日期特征。预计工作日能耗较高，周末与节假日较低。")
+# -----------------------------------
+# 7️⃣ 页面说明
+# -----------------------------------
+st.caption("""
+📊 本模型使用 **Facebook Prophet** 自动学习能耗的季节性规律：  
+- 周一至周五能耗较高；  
+- 周末及节假日较低；  
+- 年度周期（如夏季低谷、冬季高峰）自动捕捉。  
+""")
