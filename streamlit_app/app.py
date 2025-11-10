@@ -19,13 +19,29 @@ DATA_DIR = Path(__file__).parent
 # -----------------------------------
 @st.cache_data
 def load_data():
-    df = pd.read_csv(DATA_DIR / "df_daily_processed.csv", index_col=0, parse_dates=True)
-    # 自动识别能耗列
+    df = pd.read_csv(DATA_DIR / "df_daily_processed.csv", parse_dates=True)
+
+    # 自动识别日期列和能耗列
+    date_col = None
+    for c in df.columns:
+        if "date" in c.lower():
+            date_col = c
+            break
+
     target_col = [c for c in df.columns if "energy" in c.lower()][0]
-    df = df[[target_col]].rename(columns={target_col: "y"})
-    df = df.reset_index().rename(columns={"index": "ds"})
-    df = df.sort_values("ds")
+
+    # 如果没有明确日期列，就尝试用索引
+    if date_col is not None:
+        df["ds"] = pd.to_datetime(df[date_col])
+    else:
+        # 如果没有显式日期列，把第一列或索引当作日期
+        df["ds"] = pd.to_datetime(df.iloc[:, 0], errors="coerce")
+
+    df["y"] = df[target_col].astype(float)
+    df = df[["ds", "y"]].dropna().sort_values("ds")
+
     return df
+
 
 df = load_data()
 
