@@ -8,6 +8,4 @@ statsmodels>=0.14
 prophet>=1.1
 openpyxl>=3.1
 altair>=5.3
-plotly.express
-datetime
-prophet
+prophet>=1.1
