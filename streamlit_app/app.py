@@ -2,202 +2,140 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
+import plotly.express as px
 from pathlib import Path
 from sklearn.ensemble import RandomForestRegressor
-import plotly.express as px
+import datetime
 
-# ======================
-# 基本配置
-# ======================
+# =============================
+# 路径与缓存设置
+# =============================
 DATA_DIR = Path(__file__).parent
-st.set_page_config(page_title="EPSEVG 能耗仪表板", layout="wide")
+st.set_page_config(page_title="EPSEVG 能耗仪表盘", layout="wide")
 
-st.title("EPSEVG 能耗仪表板（2020-2024）")
-st.markdown("展示历史日能耗，并使用 RandomForest 预测未来 7/15/30/90 天的能耗（逐步预测）")
+# =============================
+# 定义假期与辅助函数
+# =============================
 
+def spain_holidays(year):
+    """定义西班牙节假日（示例，可扩展）"""
+    fixed_holidays = [
+        "01-01", "01-06", "04-15", "05-01", "08-15",
+        "10-12", "11-01", "12-06", "12-08", "12-25"
+    ]
+    return [datetime.datetime.strptime(f"{year}-{d}", "%Y-%m-%d").date() for d in fixed_holidays]
 
-# ======================
-# 数据加载与模型训练
-# ======================
+def in_school_holiday(date):
+    """简单示例：7-8月为暑假，圣诞节假期"""
+    if date.month in [7, 8]:
+        return True
+    if date.month == 12 and date.day >= 20:
+        return True
+    if date.month == 1 and date.day <= 7:
+        return True
+    return False
+
+# =============================
+# 加载或重训模型
+# =============================
 @st.cache_data
 def load_data_and_model():
     df = pd.read_csv(DATA_DIR / "df_daily_processed.csv", index_col=0, parse_dates=True)
 
-    # --- 滞后与滚动特征 ---
-    for lag in [1,2,3,7,14,30]:
-        df[f'lag_energy_{lag}'] = df['energy_kwh'].shift(lag)
-    for lag in [1,7,14]:
-        df[f'lag_temp_{lag}'] = df['temp_C'].shift(lag)
-        df[f'lag_rh_{lag}'] = df['rh_pct'].shift(lag)
-    df['roll7_energy'] = df['energy_kwh'].rolling(7).mean()
-    df['roll30_energy'] = df['energy_kwh'].rolling(30).mean()
+    # 自动识别能耗列名
+    target_col = [c for c in df.columns if "energy" in c.lower()][0]
+    y = df[target_col]
+    features = [c for c in df.columns if c != target_col]
+    X = df[features]
 
-    # --- 日期特征 ---
-    df['dayofweek'] = df.index.dayofweek
-    df['month'] = df.index.month
-    df['dayofyear'] = df.index.dayofyear
-
-    # --- 节假日/假期特征 ---
-    SPAIN_HOLIDAYS = [
-        "2025-01-01","2025-01-06","2025-03-20","2025-03-21",
-        "2025-05-01","2025-08-15","2025-10-12",
-        "2025-11-01","2025-12-06","2025-12-08","2025-12-25",
-    ]
-    SCHOOL_HOLIDAYS = [
-        ("2025-12-20","2026-01-06"),
-        ("2025-03-24","2025-03-30"),
-        ("2025-07-01","2025-08-31"),
-    ]
-
-    df['is_weekend'] = df.index.dayofweek >= 5
-    spain_holidays = pd.to_datetime(SPAIN_HOLIDAYS)
-    df['is_holiday'] = df.index.isin(spain_holidays)
-
-    def in_school_holiday(date):
-        for start, end in SCHOOL_HOLIDAYS:
-            if pd.Timestamp(start) <= date <= pd.Timestamp(end):
-                return True
-        return False
-    df['is_school_holiday'] = df.index.map(in_school_holiday)
-    df['is_term_time'] = ~(df['is_school_holiday'] | df['is_holiday'] | df['is_weekend'])
-
-    # --- 清理并准备训练数据 ---
-    df_model = df.dropna().copy()
-    target_col = 'energy_kwh'
-    features = [c for c in df_model.columns if c != target_col]
-
+    # 尝试加载模型
     model_path = DATA_DIR / "rf_energy_model.joblib"
-    features_path = DATA_DIR / "rf_features.joblib"
-
     try:
         model = joblib.load(model_path)
-        saved_features = joblib.load(features_path)
-        if set(saved_features) != set(features):
-            raise RuntimeError("特征变化，重训中...")
     except Exception as e:
-        st.warning(f"⚠️ 模型加载失败 ({e})，正在重新训练模型...")
-        X = df_model[features]
-        y = df_model[target_col]
-        model = RandomForestRegressor(n_estimators=300, random_state=42)
+        st.warning(f"⚠️ 模型加载失败（{e}），正在重新训练...")
+        model = RandomForestRegressor(n_estimators=200, random_state=42)
         model.fit(X, y)
         joblib.dump(model, model_path)
-        joblib.dump(features, features_path)
-        st.success("✅ 模型重新训练完成。")
+    return df, model, features, target_col
 
-    return df, model, features
-
-
-
-df, model, features = load_data_and_model()
-
-
-# ======================
-# 侧边栏筛选日期
-# ======================
-st.sidebar.header("设置")
-start_date = st.sidebar.date_input("显示开始日期", value=df.index.min().date())
-end_date = st.sidebar.date_input("显示结束日期", value=df.index.max().date())
-
-# 筛选显示的数据
-df_view = df.loc[str(start_date):str(end_date)].copy()
-
-
-# ======================
-# 历史能耗趋势
-# ======================
-energy_col = [c for c in df_view.columns if "energy" in c.lower()][0]
-
-st.subheader("历史能耗趋势")
-fig = px.line(
-    df_view,
-    x=df_view.index,
-    y=energy_col,
-    labels={'x': '日期', energy_col: '能耗 (kWh)'},
-    title='EPSEVG 能耗趋势（历史数据）'
-)
-st.plotly_chart(fig, use_container_width=True)
-
-
-# ======================
-# 预测函数
-# ======================
+# =============================
+# 预测函数（已修正：周末与节假日处理）
+# =============================
 def iterative_forecast(model, df, features, horizon):
     preds = []
     current_df = df.copy()
+    last_date = current_df.index.max()
 
     for day in range(1, horizon + 1):
-        next_date = current_df.index.max() + pd.Timedelta(days=1)
+        next_date = last_date + pd.Timedelta(days=day)
         row = {}
 
         # 滞后特征
         for lag in [1, 2, 3, 7, 14, 30, 60]:
-            row[f'lag_{lag}'] = (
-                current_df['energy_kwh'].iloc[-lag]
-                if len(current_df) >= lag
-                else current_df['energy_kwh'].iloc[-1]
-            )
+            lag_col = f"lag_{lag}"
+            if lag_col in features:
+                row[lag_col] = current_df.iloc[-lag:][features[0]].iloc[-1] if len(current_df) >= lag else current_df.iloc[-1][features[0]]
 
         # 日历特征
-        row['dayofweek'] = next_date.dayofweek
-        row['month'] = next_date.month
-        row['dayofyear'] = next_date.dayofyear
+        row["dayofweek"] = next_date.dayofweek
+        row["month"] = next_date.month
+        row["dayofyear"] = next_date.dayofyear
 
-        # 滚动平均特征
-        row['roll7_mean'] = current_df['energy_kwh'].rolling(7).mean().iloc[-1]
-        row['roll30_mean'] = current_df['energy_kwh'].rolling(30).mean().iloc[-1]
+        # 周末 / 节假日 / 学校假期 / 学期时间
+        year_holidays = spain_holidays(next_date.year)
+        row["is_weekend"] = int(next_date.dayofweek >= 5)
+        row["is_holiday"] = int(next_date.date() in year_holidays)
+        row["is_school_holiday"] = int(in_school_holiday(next_date))
+        row["is_term_time"] = int(not (row["is_weekend"] or row["is_holiday"] or row["is_school_holiday"]))
 
-        X = pd.DataFrame([row])
+        # 滚动均值
+        if "roll7_mean" in features:
+            row["roll7_mean"] = current_df.iloc[-7:][features[0]].mean()
+        if "roll30_mean" in features:
+            row["roll30_mean"] = current_df.iloc[-30:][features[0]].mean()
 
-        # 🔧 确保列名完全匹配训练特征
-        for col in features:
-            if col not in X.columns:
-                X[col] = 0
-        X = X[features]
+        # 确保所有列都存在
+        for f in features:
+            if f not in row:
+                row[f] = current_df[f].iloc[-1] if f in current_df.columns else 0
 
-        # 预测
-        pred = model.predict(X)[0]
-        preds.append((next_date, pred))
+        X_pred = pd.DataFrame([row])[features]
+        y_pred = model.predict(X_pred)[0]
+        preds.append((next_date, y_pred))
 
-        # 将预测结果加入当前数据集
-        new_row = pd.Series({'energy_kwh': pred, 'temp_C': np.nan, 'rh_pct': np.nan}, name=next_date)
+        # 将预测结果追加回 df
+        new_row = pd.Series({features[0]: y_pred}, name=next_date)
         current_df = pd.concat([current_df, new_row.to_frame().T])
 
-    return preds
+    return pd.DataFrame(preds, columns=["date", "predicted_energy"]).set_index("date")
 
+# =============================
+# 页面主体
+# =============================
+st.title("🏫 EPSEVG 能耗分析与预测 Dashboard")
 
-# ======================
-# 预测展示
-# ======================
-st.subheader("未来能耗预测")
+df, model, features, target_col = load_data_and_model()
 
-horizons = st.multiselect("选择预测天数（天）", [7, 15, 30, 90], default=[7, 15, 30, 90])
+col1, col2 = st.columns([1, 2])
+with col1:
+    horizon = st.selectbox("选择预测天数", [7, 15, 30, 90], index=2)
+with col2:
+    st.markdown("模型: RandomForestRegressor · 特征: 滞后 + 日历 + 假期")
 
-if len(horizons) == 0:
-    st.info("请在左侧选择至少一个预测天数（例如 7）")
-else:
-    all_forecasts = {}
-    for h in horizons:
-        all_forecasts[h] = iterative_forecast(model, df, features, h)
+# 执行预测
+preds = iterative_forecast(model, df, features, horizon)
 
-    # 展示预测结果
-    for h, preds in all_forecasts.items():
-        st.markdown(f"### 🔹 {h}-天预测结果")
-        dates = [p[0] for p in preds]
-        values = [p[1] for p in preds]
-        dfp = pd.DataFrame({'date': dates, 'pred_kwh': values}).set_index('date')
+# 合并历史与预测数据
+df_view = df[[target_col]].copy()
+df_view = pd.concat([df_view, preds.rename(columns={"predicted_energy": target_col})])
+df_view["type"] = ["历史"] * len(df) + ["预测"] * len(preds)
 
-        fig2 = px.line(dfp, x=dfp.index, y='pred_kwh',
-                       labels={'x': '日期', 'pred_kwh': '预测能耗 (kWh)'},
-                       title=f'{h}-天能耗预测')
-        st.plotly_chart(fig2, use_container_width=True)
-        st.table(dfp.round(2))
+# 绘图（不显示表格）
+fig = px.line(df_view, x=df_view.index, y=target_col, color="type",
+              labels={"x": "日期", target_col: "能耗 (kWh)", "type": "数据类型"},
+              title=f"EPSEVG 能耗历史与未来 {horizon} 天预测")
+fig.update_traces(line=dict(width=2))
+st.plotly_chart(fig, use_container_width=True)
 
-
-# ======================
-# 侧边栏信息
-# ======================
-st.sidebar.markdown("---")
-st.sidebar.write("模型信息：RandomForestRegressor")
-st.sidebar.write("训练范围：2020-01-01 至 2023-12-31")
-st.sidebar.write("特征：滞后 + 日历 + 滚动均值")
-st.sidebar.write("可改进方向：天气预测、节假日、建筑使用计划等")
+st.caption("📊 工作日能耗较高，周末与节假日应较低。模型基于 RandomForest，使用滞后值与日期特征。")
